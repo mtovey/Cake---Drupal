@@ -1,0 +1,15 @@
+<?php
+// $Id$: fest.install, v1.0 2009/07/05 09:37:00 mtovey Exp $
+
+
+function fest_install() {
+	$ret = array();
+  	db_add_field($ret, 'users', 'fest_sso_token', array('type' => 'varchar', 'length' => 30, 'initial' => ''));
+}
+
+function fest_uninstall() {
+	$ret = array();
+  	//db_drop_field($ret, 'user', 'fest_sso_token');
+}
+
+?>

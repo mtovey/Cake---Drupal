@@ -1,0 +1,12 @@
+The basic communication between the two systems is done via http requests over a cURL connection. The Drupal -> Cake connection assumes a basic Auth setup on the cake side.
+
+Cake
+====
+The cake code assumes the following code in your core app config file to set up configuration variables:
+Configure::write('Drupal.url','');
+Configure::write('Drupal.admin_user','');
+Configure::write('Drupal.admin_pass','');
+
+Drupal
+======
+The files in the drupal directory are module files and should be put into the sites/default/modules subdirectory of your drupal install (rename directory from drupal to a meaningful name) then activated on the admin modules page. Note that the hook_block code assumes a cake controller named sports with a specific action - future revisions of the code will remove this dependency and auto detect all appropriate data sources from available controllers.  Place the base url of your cake app with the user name and password of an appropriately permissioned user in the constants at the top of the .module file.

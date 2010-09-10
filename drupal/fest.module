@@ -1,0 +1,348 @@
+<?php
+// $Id$: fest.module
+
+define('CAKE_URL','');
+define('CAKE_ADMIN_USER','');
+define('CAKE_ADMIN_PASS','');
+
+function fest_menu() {
+  $items = array();
+  $items['user/sso_connect'] = array(
+    'title' => 'SSO to cake system',
+    'page callback' => 'fest_redirect_with_token',
+    'access callback' => 'fest_logged_in',
+  );
+  $items['user/sso_token_create'] = array(
+    'title' => 'SSO from cake system, phase 1',
+    'page callback' => 'fest_store_token',
+    'access callback' => 'fest_external_access',
+    'type' => MENU_CALLBACK,
+  );
+  $items['user/sso_token_cashin/%/%'] = array(
+    'title' => 'SSO from cake system, phase 2',
+    'page callback' => 'fest_process_token',
+    'access callback' => 'fest_generic_access',
+    'page arguments' => array(2,3),
+    'type' => MENU_CALLBACK,
+  );
+  $items['user/external_validate'] = array(
+    'title' => 'External validation of user',
+    'page callback' => 'fest_external_user_validate',
+    'access callback' => 'fest_external_access',
+    'type' => MENU_CALLBACK,
+  );
+  $items['user/external_update'] = array(
+    'title' => 'External update of specific user',
+    'page callback' => 'fest_external_user_update',
+    'access callback' => 'fest_external_access',
+    'type' => MENU_CALLBACK,
+  );
+  $items['user/external_delete'] = array(
+    'title' => 'External delete of specific user',
+    'page callback' => 'fest_external_user_delete',
+    'access callback' => 'fest_external_access',
+    'type' => MENU_CALLBACK,
+  );
+  return $items;
+}
+
+function fest_external_access() {
+  global $user;
+  return $user->uid == 1;
+}
+
+function fest_logged_in() {
+  global $user;
+  return $user->uid > 0;
+}
+
+function fest_generic_access() {
+	return true;
+}
+
+
+function fest_external_user_validate() {
+  drupal_set_header('Content-type: text/xml; charset=utf-8');
+  echo "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+  echo "<response>";
+  $passed=TRUE;
+  $failField='';
+  if(isset($_POST['valAction'])) {
+	if($_POST['valAction']=='add') {
+		if(isset($_POST['new_username'])) {
+			$test=user_load(array('name'=>$_POST['new_username']));
+			if($test!==FALSE) {
+				$passed=false;
+				$failField='username';
+			}
+		}
+	} else {
+		$existingUser=user_load(array('name'=>$_POST['current_username']));
+		if($existingUser===FALSE) {
+			if(isset($_POST['new_username'])) {
+				$test=user_load(array('name'=>$_POST['new_username']));
+				if($test!==FALSE) {
+					$passed=false;
+					$failField='username';
+				}
+			}
+		} else {
+			if(isset($_POST['new_username'])) {
+				$result=db_query("SELECT * FROM users WHERE name = '%s' AND uid <> %n",$_POST['new_username'],$existingUser->uid);
+				if(mysqli_num_rows($result)>0) {
+					$passed=false;
+					$failField='username';
+				}
+			}			
+		}
+	}
+	if($passed) {
+		echo "<code>OK</code>";
+	} else {
+		echo "<code>FAIL</code>";
+		echo "<field>".$failField."</field>";
+	}
+  } else {
+	echo "<code>ERROR</code>";
+  }
+  echo "</response>";
+}
+
+function fest_external_user_update() {
+  drupal_set_header('Content-type: text/xml; charset=utf-8');
+  echo "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+  echo "<response>";
+  if(isset($_POST['edituser'])) {
+  	$existingUser=user_load(array('name'=>$_POST['edituser']));
+	if($existingUser !== FALSE) {
+		$modArray=array();
+		if(isset($_POST['new_username'])) $modArray['name'] = $_POST['new_username'];
+		if(isset($_POST['new_pword'])) $modArray['pass'] = $_POST['new_pword'];
+		if(isset($_POST['new_firstname'])) $modArray['profile_first_name'] = $_POST['new_firstname'];
+		if(isset($_POST['new_lastname'])) $modArray['profile_last_name'] = $_POST['new_lastname'];
+		user_save($existingUser,$modArray);
+		echo "<code>OK</code>";
+	}
+  } else {
+	echo "<code>ERROR</code>";
+  }
+  echo "</response>";
+}
+
+function fest_external_user_delete() {
+  drupal_set_header('Content-type: text/xml; charset=utf-8');
+  echo "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+  echo "<response>";
+  if(isset($_POST['deluser'])) {
+  	$existingUser=user_load(array('name'=>$_POST['deluser']));
+	if($existingUser !== FALSE) {
+		$modArray=array();
+		$modArray['name'] = $_POST['deluser'];
+		user_delete($modArray,$existingUser->uid);
+		echo "<code>OK</code>";
+	}
+  } else {
+	echo "<code>ERROR</code>";
+  }
+  echo "</response>";
+}
+
+function fest_user($op, &$edit, &$account, $category = NULL) {
+	if($op=='validate') {
+		$errors = form_get_errors();
+		if(empty($errors)) {
+			$error_ind = false;
+			// Initial curl request is to login and establish a session with the cake webapp
+			$connection=_fest_remote_connect();
+			curl_setopt($connection, CURLOPT_URL, CAKE_URL . 'users/externalNameValidate');
+			$post_string='data[dform_id]='.$edit['form_id'].'&data[User][username]='.$edit['name'].'&data[User][email]='.$edit['mail'];
+			if($edit['form_id']=='user_profile_form') $post_string .= '&data[dexisting_username]='.$account->name.'&data[dexisting_email]='.$account->mail;
+			curl_setopt($connection, CURLOPT_POSTFIELDS, $post_string);
+			// Second request is to validate the requested username by the appropriate model/action
+			$result2 = curl_exec($connection); 
+			$xmlized = simplexml_load_string($result2);
+			if($xmlized->code == 'FAIL') {
+				$error_ind=true;
+				if((string)$xmlized->code['field'] == 'name') {
+					form_set_error((string)$xmlized->code['field'], 'The name <i>' . $edit['name'] . '</i> is already taken');
+				} else {
+					form_set_error((string)$xmlized->code['field'], 'The email <i>' . $edit['mail'] . '</i> is already taken');
+				}
+			}
+			_fest_remote_disconnect($connection);
+		}
+	} elseif($op=='insert') {
+	    $connection=_fest_remote_connect();
+		$the_new_user=user_load(array("uid"=>$edit['uid']));
+		curl_setopt($connection, CURLOPT_URL, CAKE_URL . 'users/externalUserCreation');
+		curl_setopt($connection, CURLOPT_POSTFIELDS, 'data[User][username]='.$the_new_user->name.'&data[User][password]='.$edit['pass'].'&data[User][first_name]='.$the_new_user->profile_first_name.'&data[User][last_name]='.$the_new_user->profile_last_name);
+		// Second request is to auto create a corresponding account holder user into the cake app
+		$result2 = curl_exec($connection); 
+		_fest_remote_disconnect($connection);
+		$xmlized = simplexml_load_string($result2);
+		if($xmlized->code == 'FAIL') {
+			
+		}
+	} elseif($op=='delete') {
+	    $connection=_fest_remote_connect();
+	    curl_setopt($connection, CURLOPT_URL, CAKE_URL . 'users/externalUserDelete');
+		curl_setopt($connection, CURLOPT_POSTFIELDS, 'data[dusername]='.$account->name);
+		// Second request is to auto create a corresponding account holder user into the cake app
+		$result2 = curl_exec($connection); 
+		_fest_remote_disconnect($connection);
+		$xmlized = simplexml_load_string($result2);
+		watchdog('Fest','User delete results: ' . $result2,NULL,WATCHDOG_INFO);
+		if($xmlized->code == 'FAIL') {
+			
+		}
+	} elseif($op=='update' && array_key_exists('form_build_id',$edit)) {
+		$connection=_fest_remote_connect();
+		curl_setopt($connection, CURLOPT_URL, CAKE_URL . 'users/externalUserUpdate');
+		$postFields="data[dexisting_username]=".$account->name;
+		if(isset($edit['name']) && $edit['name'] != '') $postFields.="&data[new_username]=".$edit['name'];
+		if(isset($_POST['profile_first_name'])) $postFields.="&data[new_firstname]=".$_POST['profile_first_name'];
+		if(isset($_POST['profile_last_name'])) $postFields.="&data[new_lastname]=".$_POST['profile_last_name'];
+		if(isset($edit['pass']) && $edit['pass'] != '') $postFields.="&data[new_pword]=".$edit['pass'];
+		//watchdog('Fest','Standard drupal updating: ' . print_r($_POST,TRUE),NULL,WATCHDOG_INFO);
+		curl_setopt($connection, CURLOPT_POSTFIELDS, $postFields);
+		
+		// Second request is to update the corresponding account holder user in the cake app
+		$result2 = curl_exec($connection);
+		// watchdog('Fest','Update result: ' . print_r($edit,TRUE) . ' vs. ' . print_r($updatedUser,TRUE),NULL,WATCHDOG_INFO);
+		_fest_remote_disconnect($connection);
+		$xmlized = simplexml_load_string($result2);
+		if($xmlized->code == 'FAIL') {
+			
+		}
+	}
+}
+
+// Define the blocks that will display data from the cake install
+function fest_block($op = 'list', $delta = 0, $edit = array()) {
+  // The $op parameter determines what piece of information is being requested.
+  switch ($op) {
+    case 'list':
+      // If $op is "list", we just need to return a list of block descriptions.
+      // This is used to provide a list of possible blocks to the administrator;
+      // end users will not see these descriptions.
+      $blocks[0] = array('info'       => t('Sports grabbed from the cake system'),);
+      return $blocks;
+    case 'configure':
+      $form = array();
+      if ($delta == 0) {
+       $form['fest_cake_sports_sort'] = array(
+          '#type' => 'textfield',
+          '#title' => t('Sort order'),
+          '#size' => 30,
+          '#description' => t('Specify the sort order of retrieved sports'),
+          '#default_value' => variable_get('fest_cake_sports_sort',  t('ASC')),
+        );
+      }
+      return $form;
+    case 'save':
+      if ($delta == 0) {
+        variable_set('fest_cake_sports_sort', $edit['fest_cake_sports_sort']);
+      }
+      return;
+    case 'view':
+      // If $op is "view", then we need to generate the block for display
+      // purposes. The $delta parameter tells us which block is being requested.
+      switch ($delta) {
+        case 0:
+          // The subject is displayed at the top of the block. Note that it
+          // should be passed through t() for translation.
+          $block['subject'] = t('Sports');
+          // The content of the block is typically generated by calling a custom
+          // function.
+          $block['content'] = fest_remote_retrieve_sports();
+          break;
+      }
+      return $block;
+  }
+}
+
+function fest_remote_retrieve_sports() {
+	$connection=_fest_remote_connect();
+	curl_setopt($connection, CURLOPT_URL, CAKE_URL . 'sports/externalIndex/' . variable_get('fest_cake_sports_sort',  t('ASC')));
+	$sports = curl_exec($connection);
+	_fest_remote_disconnect($connection);
+	$xmlized = simplexml_load_string($sports);
+	$ret_string='<ul>';
+	foreach($xmlized as $sport) {
+		$ret_string.='<li>'.$sport.'</li>';
+	}
+	$ret_string.='</ul>'; 
+	return $ret_string;
+}
+
+function fest_redirect_with_token() {
+	global $user;
+  	$token_gatherer=_fest_remote_connect();
+  	curl_setopt($token_gatherer, CURLOPT_URL, CAKE_URL . 'users/establishToken/' . $user->name);
+	$encoded_token = curl_exec($token_gatherer);
+	_fest_remote_disconnect($token_gatherer);
+	$decoded_token = simplexml_load_string($encoded_token);
+	header ("Location: " . CAKE_URL . 'users/cashinToken/' . $user->name . '/' . $decoded_token->token); 
+}
+
+function fest_store_token() {
+	drupal_set_header('Content-type: text/xml; charset=utf-8');
+	echo "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+	echo "<response>";
+	if(isset($_POST['tokenuser'])) {
+  		$existingUser=user_load(array('name'=>$_POST['tokenuser']));
+		if($existingUser !== FALSE) {
+			$length = 32;
+    		$characters = '0123456789abcdefghijklmnopqrstuvwxyz';
+    		$token = '';    
+
+    		for ($p = 0; $p < $length; $p++) {
+        		$token .= $characters[rand(0, strlen($characters)-1)];
+    		}
+    		$extra_data = array('sso_token' => t($token));
+    		user_save($existingUser,$extra_data);
+			echo "<code>OK</code>";
+			echo "<token>".$token."</token>";
+		} else {
+			echo "<code>FAIL</code>";
+		}
+  	} else {
+  		echo "<code>FAIL</code>";
+  	}
+  	echo "</response>";
+}
+
+function fest_process_token($username,$token) {
+	global $user;
+	$existingUser=user_load(array('name'=>$username));
+	if($existingUser !== FALSE) {
+		if($existingUser->sso_token==$token) {
+			$user = $existingUser;
+            $user->login = time();
+            db_query("UPDATE {users} SET login = %d WHERE uid = %d", $user->login, $existingUser->uid);
+            sess_regenerate();
+            drupal_goto('user');
+		}
+	}
+}
+
+function _fest_remote_connect() {
+	// Initial curl request is to login and establish a session with the cake webapp
+	$request = curl_init(CAKE_URL . 'users/login');
+	curl_setopt($request, CURLOPT_HEADER, 0);
+	curl_setopt($request, CURLOPT_RETURNTRANSFER, 1);
+	curl_setopt($request, CURLOPT_POSTFIELDS, 'data[User][username]='.CAKE_ADMIN_USER.'&data[User][password]='.CAKE_ADMIN_PASS);
+	curl_setopt($request, CURLOPT_SSL_VERIFYPEER, FALSE);
+	curl_setopt($request, CURLOPT_COOKIESESSION, TRUE); 
+	curl_setopt($request, CURLOPT_COOKIEFILE, "cookiefile");
+	curl_setopt($request, CURLOPT_COOKIEJAR, "cookiefile");
+	curl_setopt($request, CURLOPT_COOKIE, session_name() . '=' . session_id());
+	curl_setopt($request, CURLOPT_FOLLOWLOCATION, 1); 
+		
+	$post_response = curl_exec($request);
+	return $request;
+}
+
+function _fest_remote_disconnect($connection) {
+	@curl_close ($connection); // close curl object
+}

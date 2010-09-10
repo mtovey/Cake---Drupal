@@ -1,0 +1,4 @@
+; $Id$
+name = SportsFest
+description = "Cake bridge functionality"
+core = 6.x
